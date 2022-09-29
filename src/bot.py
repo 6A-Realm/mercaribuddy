@@ -1,44 +1,36 @@
-#!/usr/bin/env python3
-
-import os
+from dotenv import load_dotenv
+from os import getenv
 import database
+import disnake
+from disnake.ext import commands, tasks
 import time
-import discord
+from conditions import *
 import mercari
 import token_gen
-from discord.ext import commands, tasks
-from dotenv import load_dotenv
 
+
+# Load system variables
 load_dotenv()
-TOKEN = os.getenv('DISCORD_TOKEN')
-USER = os.getenv('USERNAME')
-DATABASE = os.getenv('DATABASE')
-PASSWORD = os.getenv('PASSWORD')
-HOST = os.getenv('HOST')
-PORT = os.getenv('PORT')
+TOKEN = getenv('DISCORD_TOKEN')
+GUILDS = getenv('GUILDS')
+USER = getenv('USERNAME')
+DATABASE = getenv('DATABASE')
+PASSWORD = getenv('PASSWORD')
+HOST = getenv('HOST')
+PORT = getenv('PORT')
 
+# Get database cursor
 connection = database.connect_to_database(USER, DATABASE, PASSWORD, HOST, PORT)
-cursor = connection.cursor() # get database cursor
-# connect to discord
-bot = commands.Bot(command_prefix='!', help_command=None, case_insensitive=True)
-token = ""
+cursor = connection.cursor()
 
-conditions_map = {
-    "1": "New, unused.",
-    "2": "Like new.",
-    "3": "Used - No noticable scratches or dirt.",
-    "4": "Used - there are some scratches and dirt.",
-    "5": "Used - There are scratches and dirt.",
-    "6": "Used - Poor condition."
-}
+bot = commands.InteractionBot(test_guilds=[GUILDS])
 
 @bot.event
 async def on_ready():
-    print(f'{bot.user} has connected to Discord!')
+    print(f"[-] {bot.user.name} has connected to Discord!")
 
 @bot.event
 async def on_message(ctx):
-    channel = bot.get_channel(ctx.channel.id)
     messages = await ctx.channel.history(limit=5).flatten()
 
     # this means they are a new user, add to db
@@ -46,103 +38,72 @@ async def on_message(ctx):
         database.add_new_user(connection, cursor)
     await bot.process_commands(ctx)
 
+# Add new listing to database
+@bot.slash_command()
+async def add(ctx, *, search):
+    # checking lengths of input strings
+    total = 0
+    for word in search:
+        total += len(word)
 
-# help command
-@bot.command(name="help", aliases=["h", "?", "commands"])
-async def help(ctx):
-    if not ctx.guild:
-        file = open("help.txt")
-        line = file.read()
-        file.close()
-        await ctx.send(line)
+    if total >= 256:
+        await ctx.send("**Error:** Search term should be under 256 characters")
+        return
 
-# add new listing to database
-@bot.command(name="add", aliases=["set"])
-async def add(ctx, *search):
-    if not ctx.guild:
-        # checking lengths of input strings
-        total = 0
-        for word in search:
-            total += len(word)
-
-        if total >= 256:
-            await ctx.send("**Error:** Search term should be under 256 characters")
-            return
-
-        if len(search) == 0:
-            await ctx.send("Incorrect usage of command, make sure it is formatted like this: " +
-                    "`!add (search term)`")
-            return
-        
-        mercari_search = " ".join(search)
-
-        current_time = int(time.time())
-
-        result = database.add_to_database(connection, cursor, ctx.message.author.id, mercari_search, current_time)
-
-        if result == True:
-            await ctx.send("Now tracking all new posts with the keyword **{}**.".format(mercari_search))
-            await set_status()
-        elif result == False:
-            await ctx.send("You have already set that keyword. Check your keywords with **!list**.")
-
-@bot.command(name="delete", aliases=["remove"])
-async def delete(ctx, *search):
-    if not ctx.guild:
-        # checking if command was input correctly
-        if len(search) == 0:
-            await ctx.send("Incorrect usage of command, make sure it is formatted like this: " +
-                    "`!delete (search term)`")
-            return
-
-        mercari_search = " ".join(search)
-        user_id = ctx.message.author.id
-
-        result = database.remove_from_database(connection, cursor, user_id, mercari_search)
-        if result == True:
-            await ctx.send("No longer tracking posts with the keyword **{}**.".format(mercari_search))
-            await set_status()
-        elif result == False:
-            await ctx.send("The keyword **{}** does not exist in the database.".format(mercari_search))
-
-@bot.command()
-async def deleteall(ctx):
-    if not ctx.guild:
-        user_id = ctx.message.author.id
-        result = database.delete_all_user_entries(connection, cursor, user_id)
-        if result == True:
-            await ctx.send("All entries have been deleted.")
-            await set_status()
-        elif result == False:
-            await ctx.send("An error occured while while deleting your entries. Please try again.")
-
-@bot.command()
-async def list(ctx):
-    if not ctx.guild:
-        entries = database.get_user_entries(connection, cursor, ctx.message.author.id)
-        num_entries = len(entries)
-        message = "**You currently have {} search terms:**\n".format(str(num_entries))
-        for search, found in entries:
-            message += "{} - {} listings found.\n".format(search, found)
-
-        await ctx.send(message)
-
-@bot.event
-async def on_command_error(ctx, error):
-    if ctx.command == add:
-        print(error)
+    if len(search) == 0:
         await ctx.send("Incorrect usage of command, make sure it is formatted like this: " +
                 "`!add (search term)`")
-    elif ctx.command == delete:
-        print(error)
+        return
+    
+    mercari_search = " ".join(search)
+
+    current_time = int(time.time())
+
+    result = database.add_to_database(connection, cursor, ctx.channel.id, mercari_search, current_time)
+
+    if result == True:
+        await ctx.send("Now tracking all new posts with the keyword **{}**.".format(mercari_search))
+        await set_status()
+    elif result == False:
+        await ctx.send("You have already set that keyword. Check your keywords with **!list**.")
+
+@bot.slash_command()
+async def delete(ctx, *, search):
+    # checking if command was input correctly
+    if len(search) == 0:
         await ctx.send("Incorrect usage of command, make sure it is formatted like this: " +
                 "`!delete (search term)`")
-    elif ctx.command == list:
-        print(error)
-    elif ctx.command == None:
-        await ctx.send("The message sent is not a command, the available commands are: (!help, !add, !delete, !list)\n" + 
-                        "If you need further help on how to use these commands type !help")
+        return
 
+    mercari_search = " ".join(search)
+    channel_id = ctx.channel.id
+
+    result = database.remove_from_database(connection, cursor, channel_id, mercari_search)
+    if result == True:
+        await ctx.send("No longer tracking posts with the keyword **{}**.".format(mercari_search))
+        await set_status()
+    elif result == False:
+        await ctx.send("The keyword **{}** does not exist in the database.".format(mercari_search))
+
+@bot.slash_command()
+async def deleteall(ctx):
+    channel_id = ctx.channel.id
+    result = database.delete_all_user_entries(connection, cursor, channel_id)
+    if result == True:
+        await ctx.send("All entries have been deleted.")
+        await set_status()
+    elif result == False:
+        await ctx.send("An error occured while while deleting your entries. Please try again.")
+
+@bot.slash_command()
+async def list(ctx):
+    entries = database.get_user_entries(connection, cursor, ctx.channel.id)
+    num_entries = len(entries)
+    message = "**You currently have {} search terms:**\n".format(str(num_entries))
+    for search, found in entries:
+        message += "{} - {} listings found.\n".format(search, found)
+
+    await ctx.send(message)
 
 def create_embed(listing):
     url = "https://jp.mercari.com/item/" + listing['id']
@@ -150,18 +111,11 @@ def create_embed(listing):
     price = "¥" + listing['price']
     thumbnail = listing['thumbnails'][0]
     condition = conditions_map[listing['itemConditionId']]
-    embed=discord.Embed(title=title, url=url, color=0xda5e22)
+    embed=disnake.Embed(title=title, url=url, color=0xda5e22)
     embed.add_field(name="Price", value=price, inline=False)
     embed.add_field(name="Condition", value=condition, inline=False)
     embed.set_image(url=thumbnail)
     return embed
-
-# @tasks.loop(hours=18.0)
-# async def get_new_token():
-#     global token
-#     response = token_gen.get_token()
-#     if response != "":
-#         token = response
 
 @tasks.loop(seconds=30.0)
 async def search_loop():
@@ -179,7 +133,7 @@ async def search_loop():
     entries = database.get_all_entries(connection, cursor)
     # get a list containing all of the found listings
     for entry in entries:
-        user_id = entry[1]
+        channel_id = entry[1]
         keyword = entry[2]
         time = entry[3]
 
@@ -196,15 +150,15 @@ async def search_loop():
                 post_created = int(l['created'])
                 if post_created > time:
                     max_time = max(max_time, post_created)
-                    user = await bot.fetch_user(user_id)
+                    channel = await bot.get_channel(channel_id)
                     embed = create_embed(l)
-                    await user.send("New search result for keyword **{}**.".format(keyword), embed=embed)
+                    await channel.send("New search result for keyword **{}**.".format(keyword), embed=embed)
         except Exception as e:
             print(e)
             print(listings)
         
         if max_time > time:
-            database.update_entry(connection, cursor, user_id, keyword, max_time)
+            database.update_entry(connection, cursor, channel_id, keyword, max_time)
 
 @search_loop.before_loop
 async def before_search():
@@ -213,7 +167,7 @@ async def before_search():
 async def set_status():
     num_users = database.get_number_of_unique_users(connection, cursor)[0][0]
     num_entries = database.get_number_of_entries(connection, cursor)[0][0]
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="{} terms for {} users".format(num_entries, num_users)))
+    await bot.change_presence(activity=disnake.Activity(type=disnake.ActivityType.watching, name="{} terms for {} channels".format(num_entries, num_users)))
 
 def escape_chars(string):
     new_string = string
